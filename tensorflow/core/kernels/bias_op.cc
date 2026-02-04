@@ -175,12 +175,6 @@ class BiasGradOp : public OpKernel {
                 errors::InvalidArgument("Input tensor must be at least 2D: ",
                                         output_backprop.shape()));
 
-    OP_REQUIRES(
-        context,
-        FastBoundsCheck(output_backprop.NumElements(),
-                        std::numeric_limits<int32>::max()),
-        errors::InvalidArgument("BiasGrad requires tensor size <= int32 max"));
-
     int channel_dim;
     if (data_format_ == FORMAT_NCHW) {
       channel_dim = 1;
@@ -409,8 +403,22 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
                             int32_t width, int32_t height, int32_t depth,
                             int32_t channel, Tensor* output) {
     if (data_format_ == FORMAT_NCHW) {
-      int32_t row_count = batch * channel;
-      int32_t col_count = height * width * depth;
+      int64_t row_count = static_cast<int64_t>(batch) * channel;
+      int64_t col_count = static_cast<int64_t>(height) * width * depth;
+      OP_REQUIRES(
+          context,
+          FastBoundsCheck(row_count,
+                          static_cast<int64_t>(
+                              std::numeric_limits<int32>::max()) +
+                              1) &&
+              FastBoundsCheck(col_count,
+                              static_cast<int64_t>(
+                                  std::numeric_limits<int32>::max()) +
+                                  1),
+          errors::InvalidArgument(
+              "BiasAddGrad ReduceSum path requires row_count and col_count "
+              "<= int32 max. Got row_count=",
+              row_count, ", col_count=", col_count));
       Tensor temp_grad_outputs;
       // For 'NCHW' format, we perform reduction twice: first HW, then N.
       TensorShape temp_grad_output_shape{row_count, col_count};
@@ -419,21 +427,31 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
                                                      &temp_grad_outputs));
       BiasGradGPU<T>::DoRowReduction(
           context, temp_grad_outputs.flat<T>().data(),
-          output_backprop.template flat<T>().data(), row_count, col_count);
+          output_backprop.template flat<T>().data(),
+          static_cast<int>(row_count), static_cast<int>(col_count));
 
-      row_count = batch;
-      col_count = channel;
       BiasGradGPU<T>::DoColReduction(context, output->flat<T>().data(),
-                                     temp_grad_outputs.flat<T>().data(),
-                                     row_count, col_count);
+                                     temp_grad_outputs.flat<T>().data(), batch,
+                                     channel);
     } else {
       // For 'NHWC', we simply apply reduction once on NHW.
-      int32_t row_count = batch * height * width * depth;
+      int64_t row_count =
+          static_cast<int64_t>(batch) * height * width * depth;
+      OP_REQUIRES(
+          context,
+          FastBoundsCheck(row_count,
+                          static_cast<int64_t>(
+                              std::numeric_limits<int32>::max()) +
+                              1),
+          errors::InvalidArgument(
+              "BiasAddGrad ReduceSum path requires row_count <= int32 max. "
+              "Got row_count=",
+              row_count));
       int32_t col_count = channel;
       BiasGradGPU<T>::DoColReduction(
           context, const_cast<T*>(output->flat<T>().data()),
           reinterpret_cast<const T*>(output_backprop.template flat<T>().data()),
-          row_count, col_count);
+          static_cast<int>(row_count), col_count);
     }
   }
 
