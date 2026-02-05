@@ -253,6 +253,15 @@ class BiasOp<GPUDevice, T> : public BinaryOp<T> {
     int32_t batch, height, width, depth, channel;
     GetBiasValueDims(input, data_format_, &batch, &height, &width, &depth,
                      &channel);
+    OP_REQUIRES(
+        context,
+        static_cast<int64_t>(batch) * height * width * depth * channel ==
+            input.NumElements(),
+        errors::InvalidArgument(
+            "BiasAdd: dimension values overflow int32. Got batch=", batch,
+            ", height=", height, ", width=", width, ", depth=", depth,
+            ", channel=", channel, " but tensor has ", input.NumElements(),
+            " elements"));
     OP_REQUIRES(context, bias.shape().dim_size(0) == channel,
                 errors::InvalidArgument(
                     "Must provide as many biases as the channel dimension "
@@ -402,19 +411,16 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
                             const Tensor& output_backprop, int32_t batch,
                             int32_t width, int32_t height, int32_t depth,
                             int32_t channel, Tensor* output) {
+    // Upper bound for FastBoundsCheck: value < kInt32Limit iff value <= INT32_MAX.
+    constexpr int64_t kInt32Limit =
+        static_cast<int64_t>(std::numeric_limits<int32>::max()) + 1;
     if (data_format_ == FORMAT_NCHW) {
       int64_t row_count = static_cast<int64_t>(batch) * channel;
       int64_t col_count = static_cast<int64_t>(height) * width * depth;
       OP_REQUIRES(
           context,
-          FastBoundsCheck(row_count,
-                          static_cast<int64_t>(
-                              std::numeric_limits<int32>::max()) +
-                              1) &&
-              FastBoundsCheck(col_count,
-                              static_cast<int64_t>(
-                                  std::numeric_limits<int32>::max()) +
-                                  1),
+          FastBoundsCheck(row_count, kInt32Limit) &&
+              FastBoundsCheck(col_count, kInt32Limit),
           errors::InvalidArgument(
               "BiasAddGrad ReduceSum path requires row_count and col_count "
               "<= int32 max. Got row_count=",
@@ -438,11 +444,7 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
       int64_t row_count =
           static_cast<int64_t>(batch) * height * width * depth;
       OP_REQUIRES(
-          context,
-          FastBoundsCheck(row_count,
-                          static_cast<int64_t>(
-                              std::numeric_limits<int32>::max()) +
-                              1),
+          context, FastBoundsCheck(row_count, kInt32Limit),
           errors::InvalidArgument(
               "BiasAddGrad ReduceSum path requires row_count <= int32 max. "
               "Got row_count=",
@@ -465,6 +467,15 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
     int32_t batch, height, width, depth, channel;
     GetBiasValueDims(output_backprop, data_format_, &batch, &height, &width,
                      &depth, &channel);
+    OP_REQUIRES(
+        context,
+        static_cast<int64_t>(batch) * height * width * depth * channel ==
+            output_backprop.NumElements(),
+        errors::InvalidArgument(
+            "BiasAddGrad: dimension values overflow int32. Got batch=", batch,
+            ", height=", height, ", width=", width, ", depth=", depth,
+            ", channel=", channel, " but tensor has ",
+            output_backprop.NumElements(), " elements"));
     Tensor* output = nullptr;
     TensorShape output_shape{channel};
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
@@ -486,7 +497,7 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
     int device_id = stream->parent()->device_ordinal();
     DataType dtype = output_backprop.dtype();
     BiasAddParams bias_parameters = {
-        {batch, height * width * depth, channel},
+        {batch, static_cast<int64_t>(height) * width * depth, channel},
         data_format_,
         dtype,
         device_id,
@@ -527,7 +538,7 @@ class BiasGradOp<GPUDevice, T> : public OpKernel {
           reduction_timer.value()->GetElapsedDuration();
       OP_REQUIRES_OK(context, reduction_duration.status());
 
-      elapsed_microseconds += absl::ToInt64Microseconds(*reduction_duration);
+      elapsed_microseconds = absl::ToInt64Microseconds(*reduction_duration);
       VLOG(1) << "BiasAddGrad " << bias_parameters.ToString()
               << " Reduction algo latency: " << elapsed_microseconds;
       if (elapsed_microseconds < best_result.elapsed_time()) {

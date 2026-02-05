@@ -70,7 +70,7 @@ template <typename T>
 __global__ void BiasNCHWKernel(int64_t nthreads, const T* __restrict__ input,
                                const T* __restrict__ bias,
                                T* __restrict__ output, int32_t bias_size,
-                               int32_t image_size) {
+                               int64_t image_size) {
   for (int64_t index : GpuGridRangeX(nthreads)) {
     int64_t index2 = index / image_size;
     int32_t bias_offset = index2 % bias_size;
@@ -86,7 +86,7 @@ void BiasGPU<T>::compute(const GPUDevice& d, const T* input, const T* bias,
                          int32_t width, int32_t depth, int32_t channel,
                          TensorFormat data_format) {
   const int32_t bias_size = channel;
-  const int32_t image_size = height * width * depth;
+  const int64_t image_size = static_cast<int64_t>(height) * width * depth;
   const int64_t total_count =
       static_cast<int64_t>(batch) * bias_size * image_size;
   if (total_count == 0) {
@@ -130,7 +130,7 @@ template <typename T>
 __global__ void BiasGradNCHW_Naive(int64_t nthreads,
                                    const T* __restrict__ output_backprop,
                                    T* __restrict__ bias_backprop,
-                                   int32_t bias_size, int32_t image_size) {
+                                   int32_t bias_size, int64_t image_size) {
   for (int64_t index : GpuGridRangeX(nthreads)) {
     int64_t index2 = index / image_size;
     int32_t bias_offset = index2 % bias_size;
@@ -167,7 +167,7 @@ __global__ void BiasGradNHWC_SharedAtomics(
 template <typename T>
 __global__ void BiasGradNCHW_SharedAtomics(
     const T* __restrict__ output_backprop, T* __restrict__ bias_backprop,
-    int32_t batch, int32_t bias_size, int32_t image_size, int group_size) {
+    int32_t batch, int32_t bias_size, int64_t image_size, int group_size) {
   // Initialize the shared memory.
   typedef typename AccumulatorType<T>::type AccT;
   const int32_t kSDataSize = 32;
@@ -187,7 +187,7 @@ __global__ void BiasGradNCHW_SharedAtomics(
            static_cast<int64_t>(group_index) * blockDim.x + threadIdx.x;
        index < total_count;
        index += static_cast<int64_t>(blockDim.x) * group_size) {
-    int32_t image_offset = index % image_size;
+    int64_t image_offset = index % image_size;
     int64_t batch_idx = index / image_size;
     T val = ldg(output_backprop +
                 (batch_idx * bias_size + bias_index) * image_size +
@@ -234,7 +234,7 @@ void BiasGradGPU<T>::compute(const GPUDevice& d, const T* output_backprop,
                              int32_t width, int32_t depth, int32_t channel,
                              TensorFormat data_format) {
   const int32_t bias_size = channel;
-  const int32_t image_size = height * width * depth;
+  const int64_t image_size = static_cast<int64_t>(height) * width * depth;
   const int64_t total_count =
       static_cast<int64_t>(batch) * bias_size * image_size;
   if (total_count == 0) {
